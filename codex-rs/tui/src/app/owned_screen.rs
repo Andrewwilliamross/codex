@@ -10,17 +10,26 @@ use crossterm::event::KeyEventKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Style;
 use ratatui::widgets::Clear;
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
 use super::*;
 use crate::AltScreenBehavior;
+use crate::tui::MouseClickEvent;
 use crate::tui::MouseScrollEvent;
+
+const JUMP_TO_BOTTOM_LABEL: &str = " Jump to bottom (click) ↓ ";
+const JUMP_TO_BOTTOM_SHORT_LABEL: &str = " Bottom (click) ↓ ";
+const JUMP_TO_BOTTOM_COMPACT_LABEL: &str = " ↓ ";
 
 pub(super) struct OwnedScreen {
     viewport: ConversationViewport,
     replay_in_progress: bool,
     last_conversation_area: Rect,
+    jump_to_bottom_area: Option<Rect>,
 }
 
 struct RenderedOwnedScreen {
@@ -38,6 +47,7 @@ impl OwnedScreen {
             ),
             replay_in_progress: false,
             last_conversation_area: Rect::default(),
+            jump_to_bottom_area: None,
         }
     }
 
@@ -74,6 +84,7 @@ impl OwnedScreen {
                 chat_widget.active_cell_display_hyperlink_lines(width)
             });
         self.viewport.render(conversation_area, buffer);
+        self.render_jump_to_bottom(conversation_area, buffer);
         bottom_pane.render(bottom_area, buffer);
 
         RenderedOwnedScreen {
@@ -104,6 +115,46 @@ impl OwnedScreen {
         }
         self.viewport.handle_mouse_scroll(event.direction);
         true
+    }
+
+    fn handle_mouse_click(&mut self, event: MouseClickEvent) -> bool {
+        let position = Position::new(event.column, event.row);
+        if !self
+            .jump_to_bottom_area
+            .is_some_and(|area| area.contains(position))
+        {
+            return false;
+        }
+        self.viewport.scroll_to_bottom();
+        true
+    }
+
+    fn render_jump_to_bottom(&mut self, area: Rect, buffer: &mut Buffer) {
+        self.jump_to_bottom_area = None;
+        if self.viewport.is_following_bottom() || area.height == 0 {
+            return;
+        }
+
+        let label = if area.width >= JUMP_TO_BOTTOM_LABEL.chars().count() as u16 {
+            JUMP_TO_BOTTOM_LABEL
+        } else if area.width >= JUMP_TO_BOTTOM_SHORT_LABEL.chars().count() as u16 {
+            JUMP_TO_BOTTOM_SHORT_LABEL
+        } else if area.width >= JUMP_TO_BOTTOM_COMPACT_LABEL.chars().count() as u16 {
+            JUMP_TO_BOTTOM_COMPACT_LABEL
+        } else {
+            return;
+        };
+        let width = label.chars().count() as u16;
+        let button_area = Rect::new(
+            area.x.saturating_add(area.width.saturating_sub(width) / 2),
+            area.bottom().saturating_sub(1),
+            width,
+            1,
+        );
+        Paragraph::new(label)
+            .style(Style::default().fg(Color::White).bg(Color::DarkGray))
+            .render(button_area, buffer);
+        self.jump_to_bottom_area = Some(button_area);
     }
 }
 
@@ -181,6 +232,24 @@ impl App {
         if handled {
             tui.frame_requester()
                 .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+        }
+        handled
+    }
+
+    pub(super) fn handle_owned_screen_mouse_click(
+        &mut self,
+        tui: &mut tui::Tui,
+        event: MouseClickEvent,
+    ) -> bool {
+        if !self.chat_widget.no_modal_or_popup_active() {
+            return false;
+        }
+        let handled = self
+            .owned_screen
+            .as_mut()
+            .is_some_and(|screen| screen.handle_mouse_click(event));
+        if handled {
+            tui.frame_requester().schedule_frame();
         }
         handled
     }

@@ -26,6 +26,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crossterm::event::Event;
+use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -34,6 +35,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
+use super::MouseClickEvent;
 use super::MouseScrollDirection;
 use super::MouseScrollEvent;
 use super::TuiEvent;
@@ -266,20 +268,28 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::Mouse(mouse_event) => {
                 let direction = match mouse_event.kind {
-                    MouseEventKind::ScrollUp => MouseScrollDirection::Up,
-                    MouseEventKind::ScrollDown => MouseScrollDirection::Down,
+                    MouseEventKind::ScrollUp => Some(MouseScrollDirection::Up),
+                    MouseEventKind::ScrollDown => Some(MouseScrollDirection::Down),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        return Some(TuiEvent::MouseClick(MouseClickEvent {
+                            column: mouse_event.column,
+                            row: mouse_event.row,
+                        }));
+                    }
                     MouseEventKind::Down(_)
                     | MouseEventKind::Up(_)
                     | MouseEventKind::Drag(_)
                     | MouseEventKind::Moved
                     | MouseEventKind::ScrollLeft
-                    | MouseEventKind::ScrollRight => return None,
+                    | MouseEventKind::ScrollRight => None,
                 };
-                Some(TuiEvent::MouseScroll(MouseScrollEvent {
-                    direction,
-                    column: mouse_event.column,
-                    row: mouse_event.row,
-                }))
+                direction.map(|direction| {
+                    TuiEvent::MouseScroll(MouseScrollEvent {
+                        direction,
+                        column: mouse_event.column,
+                        row: mouse_event.row,
+                    })
+                })
             }
             Event::FocusGained => {
                 self.terminal_focused.store(true, Ordering::Relaxed);
@@ -505,7 +515,7 @@ mod tests {
         stream.poll_draw_first = false;
 
         handle.send(Ok(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
+            kind: MouseEventKind::Down(MouseButton::Right),
             column: 3,
             row: 4,
             modifiers: KeyModifiers::NONE,
@@ -551,6 +561,24 @@ mod tests {
                 column: 7,
                 row: 8,
             }))
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn primary_mouse_down_maps_to_click() {
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+
+        handle.send(Ok(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 9,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        })));
+
+        assert!(matches!(
+            stream.next().await,
+            Some(TuiEvent::MouseClick(MouseClickEvent { column: 9, row: 4 }))
         ));
     }
 
