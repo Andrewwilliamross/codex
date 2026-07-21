@@ -52,6 +52,8 @@ use crate::tui::event_stream::TuiEventStream;
 use crate::tui::job_control::SuspendContext;
 use codex_config::types::NotificationCondition;
 use codex_config::types::NotificationMethod;
+use codex_terminal_detection::TerminalInfo;
+use codex_terminal_detection::TerminalName;
 
 mod event_stream;
 mod frame_rate_limiter;
@@ -86,6 +88,14 @@ fn should_emit_notification(condition: NotificationCondition, terminal_focused: 
     }
 }
 
+fn default_insert_history_mode(terminal_info: &TerminalInfo) -> InsertHistoryMode {
+    if terminal_info.name == TerminalName::Iterm2 {
+        InsertHistoryMode::NativeScrollback
+    } else {
+        InsertHistoryMode::Standard
+    }
+}
+
 impl Drop for Tui {
     fn drop(&mut self) {
         if let Err(err) = self.clear_ambient_pet_image() {
@@ -99,13 +109,43 @@ mod tests {
     use std::io::Write as _;
 
     use super::clear_for_viewport_change;
+    use super::default_insert_history_mode;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
+    use crate::insert_history::InsertHistoryMode;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
+    use codex_terminal_detection::TerminalInfo;
+    use codex_terminal_detection::TerminalName;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+
+    fn terminal_info(name: TerminalName) -> TerminalInfo {
+        TerminalInfo {
+            name,
+            term_program: None,
+            version: None,
+            term: None,
+            multiplexer: None,
+        }
+    }
+
+    #[test]
+    fn iterm2_uses_native_scrollback_history_insert() {
+        assert_eq!(
+            default_insert_history_mode(&terminal_info(TerminalName::Iterm2)),
+            InsertHistoryMode::NativeScrollback,
+        );
+    }
+
+    #[test]
+    fn other_terminals_keep_standard_history_insert() {
+        assert_eq!(
+            default_insert_history_mode(&terminal_info(TerminalName::Ghostty)),
+            InsertHistoryMode::Standard,
+        );
+    }
 
     #[test]
     fn unfocused_notification_condition_is_suppressed_when_focused() {
@@ -544,6 +584,8 @@ pub struct Tui {
     notification_condition: NotificationCondition,
     // Raw terminal-wrapped history needs a non-scroll-region insertion path in Zellij.
     is_zellij: bool,
+    // iTerm2 does not save partial scroll-region output to normal scrollback by default.
+    default_history_insert_mode: InsertHistoryMode,
     // When false, enter_alt_screen() becomes a no-op.
     alt_screen_enabled: bool,
     // Keeps unmanaged process stderr writes out of the inline viewport.
@@ -579,7 +621,9 @@ impl Tui {
         // Cache this to avoid contention with the event reader.
         supports_color::on_cached(supports_color::Stream::Stdout);
         let _ = crate::terminal_palette::default_colors();
-        let is_zellij = codex_terminal_detection::terminal_info().is_zellij();
+        let terminal_info = codex_terminal_detection::terminal_info();
+        let is_zellij = terminal_info.is_zellij();
+        let default_history_insert_mode = default_insert_history_mode(&terminal_info);
 
         Self {
             frame_requester,
@@ -598,6 +642,7 @@ impl Tui {
             notification_backend: Some(detect_backend(NotificationMethod::default())),
             notification_condition: NotificationCondition::default(),
             is_zellij,
+            default_history_insert_mode,
             alt_screen_enabled: true,
             _stderr_guard: stderr_guard,
         }
@@ -855,14 +900,17 @@ impl Tui {
         terminal: &mut Terminal,
         pending_history_lines: &mut Vec<PendingHistoryLines>,
         is_zellij: bool,
+        default_history_insert_mode: InsertHistoryMode,
     ) -> Result<()> {
         if pending_history_lines.is_empty() {
             return Ok(());
         }
 
         for batch in pending_history_lines.iter() {
-            let mode = if is_zellij && batch.wrap_policy == HistoryLineWrapPolicy::Terminal {
-                InsertHistoryMode::ZellijRaw
+            let mode = if default_history_insert_mode == InsertHistoryMode::NativeScrollback
+                || (is_zellij && batch.wrap_policy == HistoryLineWrapPolicy::Terminal)
+            {
+                InsertHistoryMode::NativeScrollback
             } else {
                 InsertHistoryMode::Standard
             };
@@ -930,6 +978,7 @@ impl Tui {
                 terminal,
                 &mut self.pending_history_lines,
                 self.is_zellij,
+                self.default_history_insert_mode,
             )?;
 
             // Update the y position for suspending so Ctrl-Z can place the cursor correctly.
@@ -1040,6 +1089,7 @@ impl Tui {
                 terminal,
                 &mut self.pending_history_lines,
                 self.is_zellij,
+                self.default_history_insert_mode,
             )?;
 
             if needs_full_repaint {

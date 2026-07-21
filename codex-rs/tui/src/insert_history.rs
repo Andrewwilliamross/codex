@@ -47,13 +47,14 @@ pub enum HistoryLineWrapPolicy {
 
 /// Selects the terminal escape strategy used when writing history above the viewport.
 ///
-/// Raw lines intentionally remain unbroken so terminal selection copies their source faithfully.
-/// Zellij does not constrain soft-wrapped continuation rows to Codex's scroll region, so its raw
-/// path appends history through the terminal and reserves blank rows for the next viewport draw.
+/// `Standard` uses a partial DECSTBM scroll region above the composer. `NativeScrollback` avoids
+/// partial regions and advances the whole screen with newlines, allowing terminals to record the
+/// rows in their normal scrollback buffer. Raw lines intentionally remain unbroken so terminal
+/// selection copies their source faithfully.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InsertHistoryMode {
     Standard,
-    ZellijRaw,
+    NativeScrollback,
 }
 
 /// Insert `lines` above the viewport using the terminal's backend writer
@@ -160,7 +161,7 @@ where
     }
     let wrapped_lines = wrapped_rows as u16;
     match mode {
-        InsertHistoryMode::ZellijRaw => {
+        InsertHistoryMode::NativeScrollback => {
             // The existing viewport is immediately replaced in the same draw pass. Clear it
             // before terminal scrolling can move composer contents into scrollback.
             terminal.clear_after_position(area.as_position())?;
@@ -173,9 +174,10 @@ where
                 write_history_line(writer, line, wrap_width)?;
             }
 
-            // Writing raw source text through the terminal preserves its soft-wrap metadata.
-            // Advance through empty rows for the viewport so history ends immediately above the
-            // composer even when a replay batch is taller than the visible history region.
+            // Advancing through the terminal's main screen records overflowing rows in native
+            // scrollback. It also preserves soft-wrap metadata when raw source lines are used.
+            // Reserve empty viewport rows so history ends immediately above the composer even
+            // when a replay batch is taller than the visible history region.
             for _ in 0..area.height {
                 queue!(writer, Print("\r\n"), Clear(ClearType::UntilNewLine))?;
             }
@@ -911,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn vt100_zellij_raw_insert_keeps_soft_wrapped_tail_above_viewport() {
+    fn vt100_native_scrollback_insert_keeps_soft_wrapped_tail_above_viewport() {
         let width: u16 = 20;
         let height: u16 = 8;
         let backend = VT100Backend::new(width, height);
@@ -928,10 +930,10 @@ mod tests {
         insert_history_lines_with_mode_and_wrap_policy(
             &mut term,
             vec![line],
-            InsertHistoryMode::ZellijRaw,
+            InsertHistoryMode::NativeScrollback,
             HistoryLineWrapPolicy::Terminal,
         )
-        .expect("insert Zellij raw history");
+        .expect("insert native scrollback history");
 
         let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
         insta::assert_snapshot!("zellij_raw_terminal_wrap_above_viewport", rows.join("\n"));
@@ -951,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn vt100_zellij_raw_replay_keeps_overflowing_soft_wrapped_tail_above_viewport() {
+    fn vt100_native_scrollback_replay_keeps_overflowing_soft_wrapped_tail_above_viewport() {
         let width: u16 = 20;
         let height: u16 = 8;
         let backend = VT100Backend::new(width, height);
@@ -964,10 +966,10 @@ mod tests {
         insert_history_lines_with_mode_and_wrap_policy(
             &mut term,
             vec![line],
-            InsertHistoryMode::ZellijRaw,
+            InsertHistoryMode::NativeScrollback,
             HistoryLineWrapPolicy::Terminal,
         )
-        .expect("replay Zellij raw history");
+        .expect("replay native scrollback history");
 
         let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
         insta::assert_snapshot!(
@@ -986,6 +988,83 @@ mod tests {
         assert!(
             !viewport_rows.contains("tail-must-remain"),
             "overflowing raw tail must not be written through the viewport, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn vt100_native_scrollback_mode_preserves_history_that_standard_mode_drops() {
+        fn run(mode: InsertHistoryMode) -> (Vec<String>, Vec<String>) {
+            let width: u16 = 77;
+            let height: u16 = 42;
+            let backend =
+                VT100Backend::new_with_scrollback(width, height, /*scrollback_len*/ 4096);
+            let mut term =
+                crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+            term.set_viewport_area(Rect::new(
+                /*x*/ 0, /*y*/ 20, width, /*height*/ 20,
+            ));
+
+            let lines = (1..=50)
+                .map(|index| Line::from(format!("OVERFLOW_CASE line {index:02}")))
+                .collect();
+            insert_history_lines_with_mode_and_wrap_policy(
+                &mut term,
+                lines,
+                mode,
+                HistoryLineWrapPolicy::PreWrap,
+            )
+            .expect("insert overflowing history");
+
+            term.backend_mut()
+                .vt100_mut()
+                .screen_mut()
+                .set_scrollback(usize::MAX);
+            let oldest_rows = term.backend().vt100().screen().rows(0, width).collect();
+
+            term.backend_mut()
+                .vt100_mut()
+                .screen_mut()
+                .set_scrollback(0);
+            let live_rows = term.backend().vt100().screen().rows(0, width).collect();
+
+            (oldest_rows, live_rows)
+        }
+
+        let contains = |rows: &[String], needle: &str| rows.iter().any(|row| row.contains(needle));
+        let (standard_oldest, standard_live) = run(InsertHistoryMode::Standard);
+        let (native_oldest, native_live) = run(InsertHistoryMode::NativeScrollback);
+        let snapshot_rows = |rows: &[String]| {
+            rows.iter()
+                .map(|row| row.trim_end())
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        insta::assert_snapshot!(
+            "native_scrollback_preserves_overflow",
+            format!(
+                "oldest scrollback:\n{}\n\nlive screen:\n{}",
+                snapshot_rows(&native_oldest),
+                snapshot_rows(&native_live),
+            ),
+        );
+
+        assert!(
+            !contains(&standard_oldest, "OVERFLOW_CASE line 01"),
+            "partial scroll-region insertion should reproduce the lost-history bug",
+        );
+        assert!(
+            contains(&native_oldest, "OVERFLOW_CASE line 01"),
+            "native scrollback insertion should preserve the oldest history row",
+        );
+        assert!(
+            contains(&standard_live, "OVERFLOW_CASE line 50"),
+            "standard insertion should retain the newest history row",
+        );
+        assert!(
+            contains(&native_live, "OVERFLOW_CASE line 50"),
+            "native scrollback insertion should retain the newest history row",
         );
     }
 

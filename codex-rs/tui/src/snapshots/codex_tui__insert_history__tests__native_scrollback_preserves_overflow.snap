@@ -1,0 +1,51 @@
+---
+source: tui/src/insert_history.rs
+expression: "format!(\"oldest scrollback:\\n{}\\n\\nlive screen:\\n{}\",\nsnapshot_rows(&native_oldest), snapshot_rows(&native_live),)"
+---
+oldest scrollback:
+OVERFLOW_CASE line 01
+OVERFLOW_CASE line 02
+OVERFLOW_CASE line 03
+OVERFLOW_CASE line 04
+OVERFLOW_CASE line 05
+OVERFLOW_CASE line 06
+OVERFLOW_CASE line 07
+OVERFLOW_CASE line 08
+OVERFLOW_CASE line 09
+OVERFLOW_CASE line 10
+OVERFLOW_CASE line 11
+OVERFLOW_CASE line 12
+OVERFLOW_CASE line 13
+OVERFLOW_CASE line 14
+OVERFLOW_CASE line 15
+OVERFLOW_CASE line 16
+OVERFLOW_CASE line 17
+OVERFLOW_CASE line 18
+OVERFLOW_CASE line 19
+OVERFLOW_CASE line 20
+OVERFLOW_CASE line 21
+OVERFLOW_CASE line 22
+
+live screen:
+OVERFLOW_CASE line 29
+OVERFLOW_CASE line 30
+OVERFLOW_CASE line 31
+OVERFLOW_CASE line 32
+OVERFLOW_CASE line 33
+OVERFLOW_CASE line 34
+OVERFLOW_CASE line 35
+OVERFLOW_CASE line 36
+OVERFLOW_CASE line 37
+OVERFLOW_CASE line 38
+OVERFLOW_CASE line 39
+OVERFLOW_CASE line 40
+OVERFLOW_CASE line 41
+OVERFLOW_CASE line 42
+OVERFLOW_CASE line 43
+OVERFLOW_CASE line 44
+OVERFLOW_CASE line 45
+OVERFLOW_CASE line 46
+OVERFLOW_CASE line 47
+OVERFLOW_CASE line 48
+OVERFLOW_CASE line 49
+OVERFLOW_CASE line 50
